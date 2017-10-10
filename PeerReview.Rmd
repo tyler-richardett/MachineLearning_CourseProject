@@ -1,0 +1,155 @@
+---
+title: "Predicting Weight Lifting Exercise Techniques"
+author: "Tyler Richardett"
+date: "10/9/2017"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Overview
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit*, it is now possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly do is quantify *how much* of a particular activity they do, but they rarely quantify *how well they do it*. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of six participants. They were asked to perform barbell lifts correctly and incorrectly in five different ways. More information is available from the website [here](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) (see the section on the **Weight Lifting Exercise Dataset**).
+
+After narrowing the training set down to 32 predictors, a model was fit using the random forest method---resulting in an expected accuracy of 99.8 percent.
+
+## Download Training and Testing Data
+
+Check for the files in your working directory. If they do not already exist, download the `pml-training.csv` and `pml-testing.csv` files. Use `read.csv` to read in the data.
+
+```{r download.data}
+## Training set download
+destfile_train <- "pml-training.csv"
+fileURL_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+
+if(!file.exists(destfile_train)) {
+        download.file(fileURL_train, destfile_train, method = "curl")
+}
+
+training <- read.csv(destfile_train, na.strings = c("NA", "#DIV/0!", ""))
+
+## Testing set download
+destfile_test <- "pml-testing.csv"
+fileURL_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if(!file.exists(destfile_test)) {
+        download.file(fileURL_test, destfile_test, method = "curl")
+}
+
+testing <- read.csv(destfile_test, na.strings = c("NA", "#DIV/0!", ""))
+```
+
+## Preprocessing
+
+First, load the {caret} package. For all preprocessing and model fitting, we are going to use the training data set. As a first step, check for variables showing little variance using the `nearZeroVar` function and remove those from the set.
+
+```{r near.zero.variance}
+library(caret)
+nzv <- nearZeroVar(training)
+preprocTraining <- training[,-nzv]
+```
+
+Remove the first five variables (X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp) from the training set, as they should be irrelevant in predicting the classe variable. 
+
+```{r remove.irrelevant.variables}
+preprocTraining <- preprocTraining[,-c(1:5)]
+```
+
+Using the `colSums` and `is.na` functions, find variables that contain missing information, and remove them from the training set.
+
+``` {r remove.NAs}
+preprocTraining <- preprocTraining[colSums(is.na(preprocTraining)) / nrow(preprocTraining) < .01]
+```
+
+Using the `cor` and `findCorrelation` functions, find variables with at least 75 percent correlation, and remove them from the training set.
+
+```{r remove.correlated.variables}
+corVars <- cor(preprocTraining[,-54])
+highCor <- findCorrelation(corVars, cutoff = .75)
+preprocTraining <- preprocTraining[,-highCor]
+```
+
+Following each of these steps leaves us with 32 variables to predict classe.
+
+```{r training.dim}
+dim(preprocTraining)
+```
+
+## Exploratory Data Analysis
+
+The following code creates a density plot, showing the top four influential variables from our final model (see **Variable Importance** below). As you will see, we can already visualize some of the separation among each class within certain predictors.
+
+*(Note: The code for editing the appearance of the plot is borrowed from [here](https://topepo.github.io/caret/visualizations.html).)*
+
+``` {r plotting.variables}
+featurePlot(x = preprocTraining[,c(1,2,21,23)], 
+            y = preprocTraining$classe, 
+            plot = "density",
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")), 
+            adjust = 1.5, 
+            pch = "|", 
+            layout = c(4, 1), 
+            auto.key = list(columns = 5))
+```
+
+## Partitioning Data
+
+In order to make the research reproducible, set the seed. Then, use the `createDataPartition` function to separate the training set into 60 percent training data and 40 percent testing data. By building the model using the training set, and by applying it to the testing set, we are using the cross-validation technique to assess how the results of this analysis will generalize to an independent data set.
+
+``` {r partition.training.testing}
+set.seed(2017-10-09)
+inTrain <- createDataPartition(preprocTraining$classe, p = 0.6, list = FALSE)
+cleanTraining <- preprocTraining[inTrain,]
+cleanTesting <- preprocTraining[-inTrain,]
+```
+
+## Model Fitting
+
+I chose to begin with the random forest method of fitting because a) it is usually one of the [top-performing](http://sux13.github.io/DataScienceSpCourseNotes/8_PREDMACHLEARN/Practical_Machine_Learning_Course_Notes.html#random-forest) algorithms for prediction and b) as an extension of classification trees, it's an ideal method for predicting class, or factor, variables. One drawback of the random forest method is the greater chance of over-fitting, particularly on noisy data sets. Hopefully, by carefully pre-processing the data, we avoid this issue.
+
+First, use the `randomForest` function to build the model. Then, use the `predict` function to apply the model to the testing set. Finally, use the `confusionMatrix` function to determine the accuracy of the model.
+
+As shown by the matrix below, the random forest method was a good first instinct. Its accuracy was 99.8 percent. While some may continue to test other models, for the purpose of brevity---and because any improvement would be negligble---I have decided to stick with this model.
+
+```{r model.fit}
+library(randomForest)
+modFit <- randomForest(classe ~ ., data = cleanTraining)
+pred <- predict(modFit, cleanTesting, type = "class")
+confusionMatrix(pred, cleanTesting$classe)
+```
+
+### Expected Out-of-sample Error
+
+To calculate the expected out-of-sample error, we simply take the accuracy from the matrix above and subtract it from 1. The result is 0.2 percent.
+
+``` {r out.sample.error}
+1 - confusionMatrix(pred, cleanTesting$classe)$overall[[1]]
+```
+
+### Variable Importance
+
+The `varImp` function allows us to see which predictors contributed most to the final model. The top five for this model were num_window, yaw_belt, magnet_dumbbell_z, pitch_forearm, and magnet_belt_y.
+
+``` {r var.importance, results = "asis"}
+library(dplyr)
+v <- varImp(modFit) %>% 
+        mutate(var = row.names(varImp(modFit))) %>% 
+        arrange(desc(Overall)) %>% 
+        select(var, Overall)
+
+library(pander)
+pandoc.table(head(v, 5), justify = "left")
+```
+
+## Predictions
+
+To predict the outcome variable on the provided testing set, we again use the `predict` function. The results are below.
+
+``` {r predict.testing, results = "asis"}
+predTest <- predict(modFit, testing, type = "class")
+finalPredictions <- data.frame(problem.id = testing$problem_id, pred.classe = predTest)
+pandoc.table(finalPredictions, justify = "left")
+```
